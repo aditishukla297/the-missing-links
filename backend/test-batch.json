@@ -1,0 +1,10 @@
+{
+  "device_id": "macbook-01",
+  "batch_id": "f6f40a82-6bc1-4b71-a22c-3a57b4c4f018",
+  "log_type": "auth",
+  "lines": [
+    "Oct 19 10:02:14 server sshd: Failed password for admin",
+    "Oct 19 10:03:08 server sshd: Failed password for admin",
+    "Oct 19 10:04:21 server sshd: Accepted password for admin"
+  ]
+}

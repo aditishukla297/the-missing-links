@@ -1,0 +1,486 @@
+
+import hashlib
+import json
+import os
+import secrets
+from datetime import datetime, timezone
+from pathlib import Path
+from uuid import UUID, uuid4
+from app.parser import parse_log
+from app.reports import router as reports_router
+
+from fastapi import FastAPI, Header, HTTPException, Request
+from pydantic import BaseModel, Field, ValidationError
+
+app = FastAPI(
+    title="Tracepoint API",
+    version="0.1.0",
+    description="Incident timeline and evidence collection"
+)
+
+EVIDENCE_DIR = Path(__file__).resolve().parent.parent / "data" / "evidence"
+MAX_BATCH_BYTES = 1024 * 1024  # 1 MiB
+MAX_LOG_LINES = 1000
+
+
+class LogBatch(BaseModel):
+    device_id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,64}$")
+    batch_id: UUID
+    log_type: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,32}$")
+    lines: list[str] = Field(min_length=1, max_length=MAX_LOG_LINES)
+    source_timezone: str = Field(default="Asia/Kolkata", min_length=1, max_length=64)  # TRACEPOINT_TZ_V1
+
+
+@app.get("/health")
+def health():
+    return {
+        "status": "ok",
+        "service": "tracepoint"
+    }
+
+
+@app.post("/api/v1/ingest", status_code=201)
+async def ingest_logs(
+    request: Request,
+    x_api_key: str | None = Header(default=None)
+):
+    expected_key = os.getenv("AGENT_API_KEY")
+
+    if not expected_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Agent authentication is not configured"
+        )
+
+    if not x_api_key or not secrets.compare_digest(
+        x_api_key, expected_key
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid API key"
+        )
+
+    # Read with an explicit size limit.
+    chunks = []
+    total = 0
+
+    async for chunk in request.stream():
+        total += len(chunk)
+
+        if total > MAX_BATCH_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail="Batch exceeds 1 MiB"
+            )
+
+        chunks.append(chunk)
+
+    raw_bytes = b"".join(chunks)
+
+    try:
+        payload = LogBatch.model_validate_json(raw_bytes)
+    except (ValidationError, ValueError):
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid log batch"
+        )
+
+    return _store_log_batch(payload, raw_bytes)
+
+def _store_log_batch(payload: LogBatch, raw_bytes: bytes):
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    try:
+        ZoneInfo(payload.source_timezone)
+    except (ZoneInfoNotFoundError, ValueError, KeyError):
+        raise HTTPException(status_code=422, detail="Invalid source timezone")
+    sha256 = hashlib.sha256(raw_bytes).hexdigest()
+
+    # One directory per registered source.
+    device_dir = EVIDENCE_DIR / payload.device_id
+    device_dir.mkdir(parents=True, exist_ok=True)
+
+    batch_name = str(payload.batch_id)
+    evidence_path = device_dir / f"{batch_name}.json"
+    metadata_path = device_dir / f"{batch_name}.meta.json"
+
+    # Exclusive creation prevents overwriting existing evidence.
+    try:
+        with evidence_path.open("xb") as file:
+            file.write(raw_bytes)
+            file.flush()
+            os.fsync(file.fileno())
+    except FileExistsError:
+        existing_hash = hashlib.sha256(
+            evidence_path.read_bytes()
+        ).hexdigest()
+
+        if existing_hash != sha256:
+            raise HTTPException(
+                status_code=409,
+                detail="Batch ID already exists with different content"
+            )
+
+        return {
+            "status": "duplicate",
+            "batch_id": batch_name,
+            "sha256": sha256
+        }
+
+    metadata = {
+        "device_id": payload.device_id,
+        "batch_id": batch_name,
+        "log_type": payload.log_type,
+        "source_timezone": payload.source_timezone,
+        "line_count": len(payload.lines),
+        "sha256": sha256,
+        "received_at": datetime.now(timezone.utc).isoformat(),
+        "evidence_file": evidence_path.name
+    }
+
+    with metadata_path.open("x", encoding="utf-8") as file:
+        json.dump(metadata, file, indent=2)
+        file.flush()
+        os.fsync(file.fileno())
+
+    return {
+        "status": "accepted",
+        **metadata
+    }
+
+
+@app.get("/api/v1/timeline")
+def get_timeline(
+    severity: str | None = None,
+    device_id: str | None = None,
+    event_type: str | None = None,
+    username: str | None = None,
+):
+    events = []
+
+    if not EVIDENCE_DIR.exists():
+        return {"total": 0, "events": []}
+
+    for evidence_path in EVIDENCE_DIR.glob("*/*.json"):
+        if evidence_path.name.endswith(".meta.json"):
+            continue
+
+        try:
+            with evidence_path.open("r", encoding="utf-8") as file:
+                batch = json.load(file)
+
+            metadata_path = evidence_path.with_name(
+                evidence_path.stem + ".meta.json"
+            )
+
+            received_at = None
+            source_timezone = batch.get("source_timezone", "Asia/Kolkata")
+            if metadata_path.exists():
+                metadata = json.loads(metadata_path.read_text())
+                received_at = metadata.get("received_at")
+                source_timezone = metadata.get("source_timezone", source_timezone)
+
+            for line_number, line in enumerate(batch["lines"], start=1):
+                event = parse_log(
+                    line=line,
+                    device_id=batch["device_id"],
+                    batch_id=batch["batch_id"],
+                    log_type=batch["log_type"],
+                    received_at=received_at,
+                    source_timezone=source_timezone,
+                )
+
+                event["line_number"] = line_number
+                events.append(event)
+
+        except Exception as error:
+            print(f"ERROR reading {evidence_path}: {type(error).__name__}: {error}")
+            continue
+
+    
+    
+    events.sort(key=lambda event: (
+        event["timestamp"] is None,
+        datetime.fromisoformat(event.get("timestamp_utc") or event["timestamp"]).astimezone(
+            timezone.utc
+        ) if event["timestamp"] else datetime.max.replace(
+            tzinfo=timezone.utc
+        )
+    ))
+
+
+    if severity:
+        events = [e for e in events if e["severity"] == severity]
+
+    if device_id:
+        events = [e for e in events if e["device_id"] == device_id]
+
+    if event_type:
+        events = [e for e in events if e["event_type"] == event_type]
+
+    if username:
+        events = [e for e in events if e["username"] == username]
+
+    return {
+        "total": len(events),
+        "events": events
+    }
+
+
+# THREAD_AUTH_V1: local user authentication and timeline access control
+from fastapi.responses import JSONResponse as _ThreadJSONResponse
+from app.auth import router as _thread_auth_router, current_user as _thread_current_user
+
+app.include_router(_thread_auth_router)
+from app.investigations import router as investigations_router
+
+app.include_router(investigations_router)
+app.include_router(reports_router)
+
+# TRACEPOINT_DEMO_LAB_V1
+DEMO_SCENARIOS = {
+    "tz_india": {
+        "label": "Time zones · India (Asia/Kolkata) · 10:30 IST",
+        "log_type": "macos_unified", "source_timezone": "Asia/Kolkata",
+        "lines": ["2026-10-19 10:30:00.000000+0530 india-host sshd[1234]: Failed password for admin"],
+    },
+    "tz_new_york": {
+        "label": "Time zones · New York (America/New_York) · 01:00 EDT",
+        "log_type": "windows_event", "source_timezone": "America/New_York",
+        "lines": ['{"EventID":4625,"TimeCreated":"2026-10-19T01:00:00-04:00","TargetUserName":"admin","Message":"An account failed to log on"}'],
+    },
+    "tz_london": {
+        "label": "Time zones · London (Europe/London) · 06:00 BST",
+        "log_type": "macos_unified", "source_timezone": "Europe/London",
+        "lines": ["2026-10-19 06:00:00.000000+0100 london-host sshd[1234]: Failed password for admin"],
+    },
+    "tz_linux_new_york": {
+        "label": "Time zones · Linux syslog (New York, inferred)",
+        "log_type": "linux_syslog", "source_timezone": "America/New_York",
+        "lines": ["Oct 19 01:00:00 ny-linux sshd: Failed password for root"],
+    },
+
+    # TRACEPOINT_PARSING_GAPS_V1: intentionally imperfect demo evidence.
+    "parsing_mixed": {
+        "label": "Parsing gaps · Mixed valid and problematic logs",
+        "log_type": "linux_syslog",
+        "lines": [
+            "Oct 19 10:15:20 linux-server sshd: Failed password for admin",
+            "Oct 19 ??? linux-server sshd: Failed password for root",
+            "Unrecognized security appliance record: code=XYZ action=blocked",
+        ],
+    },
+    "parsing_bad_json": {
+        "label": "Parsing gaps · Malformed Windows JSON",
+        "log_type": "windows_event",
+        "lines": [
+            '{"EventID":4625,"TimeCreated":"2026-10-19T10:15:20Z","Message":"An account failed to log on"',
+        ],
+    },
+    "parsing_missing_time": {
+        "label": "Parsing gaps · Missing timestamp",
+        "log_type": "linux_syslog",
+        "lines": ["sshd: Failed password for admin from 192.0.2.44"],
+    },
+    "parsing_unknown_event": {
+        "label": "Parsing gaps · Unknown macOS event",
+        "log_type": "macos_unified",
+        "lines": ["2026-10-19 10:15:20.000000+0530 macbook securityd[123]: Unmapped policy code 739"],
+    },
+    "linux_ssh": {
+        "label": "Linux · Syslog SSH failures",
+        "log_type": "linux_syslog",
+        "lines": [
+            "Oct 19 10:15:20 linux-server sshd: Failed password for root from 192.0.2.10 port 50231 ssh2",
+            "Oct 19 10:20:00 linux-server sshd: Accepted password for admin from 192.0.2.11 port 50232 ssh2",
+        ],
+    },
+    "windows_login": {
+        "label": "Windows · Security Event Log (JSON export)",
+        "log_type": "windows_event",
+        "lines": [
+            '{"EventID":4625,"TimeCreated":"2026-10-19T10:15:20Z","Computer":"WIN-SERVER-01","TargetUserName":"admin","Message":"An account failed to log on"}',
+            '{"EventID":4624,"TimeCreated":"2026-10-19T10:17:20Z","Computer":"WIN-SERVER-01","TargetUserName":"admin","Message":"An account was successfully logged on"}',
+        ],
+    },
+    "macos_ssh": {
+        "label": "macOS · Unified Log text export",
+        "log_type": "macos_unified",
+        "lines": [
+            "2026-10-19 10:15:20.000000+0530 macbook sshd[1234]: Failed password for admin from 192.0.2.20 port 50500 ssh2",
+            "2026-10-19 10:16:20.000000+0530 macbook sshd[1234]: Accepted password for admin from 192.0.2.20 port 50501 ssh2",
+        ],
+    },
+    "ssh_failures": {
+        "label": "Legacy · Repeated SSH authentication failures",
+        "log_type": "auth",
+        "lines": [
+            "Oct 19 10:15:20 demo-server sshd: Failed password for root",
+            "Oct 19 10:20:00 demo-server sshd: Failed password for admin",
+            "Oct 19 10:21:10 demo-server sshd: Failed password for root",
+        ],
+    },
+    "ssh_success": {
+        "label": "Legacy · Successful SSH authentication",
+        "log_type": "auth",
+        "lines": ["Oct 19 10:24:00 demo-server sshd: Accepted password for admin"],
+    },
+}
+
+class DemoIngestRequest(BaseModel):
+    scenario: str
+
+@app.get("/api/v1/demo/scenarios")
+def demo_scenarios():
+    return {"items": [
+        {"id": key, "label": value["label"], "device_id": "demo-device-01",
+         "log_type": value["log_type"], "source_timezone": value.get("source_timezone", "Asia/Kolkata"), "lines": value["lines"]}
+        for key, value in DEMO_SCENARIOS.items()
+    ]}
+
+@app.post("/api/v1/demo/ingest", status_code=201)
+def demo_ingest(request: Request, selection: DemoIngestRequest):
+    # Browser-only JSON + a custom header; authentication is also enforced by middleware.
+    if request.headers.get("X-Tracepoint-Demo") != "1":
+        raise HTTPException(status_code=400, detail="Missing demo request header")
+    scenario = DEMO_SCENARIOS.get(selection.scenario)
+    if scenario is None:
+        raise HTTPException(status_code=422, detail="Unknown demo scenario")
+    payload_bytes = json.dumps({
+        "device_id": "demo-device-01",
+        "batch_id": str(uuid4()),
+        "log_type": scenario["log_type"],
+        "source_timezone": scenario.get("source_timezone", "Asia/Kolkata"),
+        "lines": scenario["lines"],
+    }, ensure_ascii=False).encode("utf-8")
+    payload = LogBatch.model_validate_json(payload_bytes)
+    stored = _store_log_batch(payload, payload_bytes)
+    events = []
+    for index, line in enumerate(payload.lines, start=1):
+        event = parse_log(
+            line=line, device_id=payload.device_id, batch_id=str(payload.batch_id),
+            log_type=payload.log_type, received_at=stored["received_at"],
+            source_timezone=payload.source_timezone,
+        )
+        event["line_number"] = index
+        events.append(event)
+    return {**stored, "events": events, "demo": True}
+# END TRACEPOINT_DEMO_LAB_V1
+
+
+@app.middleware("http")
+async def _thread_require_login(request, call_next):
+    if request.url.path.startswith((
+    "/api/v1/timeline",
+    "/api/v1/demo",
+    "/api/v1/evidence",
+    "/api/v1/investigations",
+    "/api/v1/graph",
+)):
+        if _thread_current_user(request) is None:
+            return _ThreadJSONResponse({"detail": "Sign in required"}, status_code=401)
+    return await call_next(request)
+
+@app.get("/api/v1/evidence")
+def list_evidence():
+    """List stored evidence batches and their recorded metadata."""
+    batches = []
+
+    if not EVIDENCE_DIR.exists():
+        return {"items": [], "total": 0}
+
+    for metadata_path in EVIDENCE_DIR.glob("*/*.meta.json"):
+        try:
+            with metadata_path.open("r", encoding="utf-8") as file:
+                metadata = json.load(file)
+
+            batches.append({
+                "device_id": metadata.get("device_id"),
+                "batch_id": metadata.get("batch_id"),
+                "log_type": metadata.get("log_type"),
+                "source_timezone": metadata.get("source_timezone", "Asia/Kolkata"),
+                "line_count": metadata.get("line_count"),
+                "sha256": metadata.get("sha256"),
+                "received_at": metadata.get("received_at"),
+                "evidence_file": metadata.get("evidence_file"),
+            })
+        except (OSError, ValueError) as error:
+            print(f"ERROR reading metadata {metadata_path}: {error}")
+
+    batches.sort(
+        key=lambda item: item.get("received_at") or "",
+        reverse=True
+    )
+
+    return {"items": batches, "total": len(batches)}
+
+
+@app.post("/api/v1/evidence/{device_id}/{batch_id}/verify")
+def verify_evidence(device_id: str, batch_id: str):
+    """Recalculate the stored evidence hash and compare it with metadata."""
+    import re
+    import hmac
+
+    # Prevent path traversal through URL parameters.
+    safe_id = re.compile(r"^[A-Za-z0-9_-]+$")
+
+    if not safe_id.fullmatch(device_id) or not safe_id.fullmatch(batch_id):
+        raise HTTPException(status_code=400, detail="Invalid evidence identifier")
+
+    device_dir = EVIDENCE_DIR / device_id
+    evidence_path = device_dir / f"{batch_id}.json"
+    metadata_path = device_dir / f"{batch_id}.meta.json"
+
+    if not metadata_path.is_file():
+        raise HTTPException(status_code=404, detail="Evidence metadata not found")
+
+    try:
+        with metadata_path.open("r", encoding="utf-8") as file:
+            metadata = json.load(file)
+    except (OSError, ValueError):
+        raise HTTPException(status_code=500, detail="Could not read evidence metadata")
+
+    if not evidence_path.is_file():
+        return {
+            "status": "missing",
+            "verified": False,
+            "device_id": device_id,
+            "batch_id": batch_id,
+            "detail": "Original evidence file is missing"
+        }
+
+    expected_hash = metadata.get("sha256")
+
+    if not isinstance(expected_hash, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", expected_hash):
+        return {
+            "status": "invalid_metadata",
+            "verified": False,
+            "device_id": device_id,
+            "batch_id": batch_id,
+            "detail": "Recorded SHA-256 hash is missing or invalid"
+        }
+
+    try:
+        actual_hash = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+    except OSError:
+        raise HTTPException(status_code=500, detail="Could not read evidence file")
+
+    verified = hmac.compare_digest(actual_hash, expected_hash.lower())
+
+    return {
+        "status": "verified" if verified else "mismatch",
+        "verified": verified,
+        "device_id": device_id,
+        "batch_id": batch_id,
+        "expected_sha256": expected_hash,
+        "actual_sha256": actual_hash,
+        "verified_at": datetime.now(timezone.utc).isoformat()
+    }
+
+
+# TRACEPOINT_GRAPH_V1
+from app.graph import router as graph_router
+app.include_router(graph_router)
+
+# TRACEPOINT_TRUST_SCORE_V1
+from app.trust_score import router as trust_score_router
+app.include_router(trust_score_router)

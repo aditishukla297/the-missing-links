@@ -1,0 +1,72 @@
+/* Append to frontend/src/Tracepoint.css */
+.tp-inv{display:flex;flex-direction:column;gap:20px}
+.tp-inv-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}
+.tp-inv-metric{padding:21px;display:flex;flex-direction:column;gap:10px}
+.tp-inv-metric span{font-size:13px;color:#64748b;font-weight:600}
+.tp-inv-metric strong{font-size:30px;line-height:1.1;color:#202231}
+.tp-inv-card{overflow:hidden}
+.tp-inv-head-actions{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.tp-inv-card .tp-toolbar{padding:0 20px 20px}
+.tp-inv-empty{padding:52px 18px;display:flex;flex-direction:column;align-items:center;gap:10px;color:#788296;text-align:center}
+.tp-inv-empty strong{color:#25283a;font-size:15px}
+.tp-inv-empty p{margin:0;font-size:13px}
+.tp-inv-clickable{cursor:pointer}
+.tp-inv-case{font-size:11px;color:#7753d0}
+.tp-inv-title{font-weight:650;color:#292c39;margin-top:4px}
+.tp-inv-pill{display:inline-flex;align-items:center;padding:5px 9px;border-radius:6px;font-size:11px;font-weight:700;text-transform:capitalize;white-space:nowrap;background:#f0f1f6;color:#646b7b}
+.tp-inv-pill.critical,.tp-inv-pill.high{background:#fff0ed;color:#b93637}
+.tp-inv-pill.medium,.tp-inv-pill.investigating{background:#fff3e3;color:#a66a13}
+.tp-inv-pill.low,.tp-inv-pill.resolved{background:#e8f7ee;color:#187746}
+.tp-inv-pill.open{background:#f0ebfc;color:#704bc9}
+.tp-inv-form{display:flex;flex-direction:column;gap:19px}
+.tp-inv-form label,.tp-inv-status-label{display:flex;flex-direction:column;gap:8px;font-size:13px;font-weight:650;color:#43495b}
+.tp-inv input,.tp-inv textarea,.tp-inv select{box-sizing:border-box;width:100%;padding:11px 12px;border:1px solid #dfe2ea;border-radius:8px;background:white;color:#262a39;font:inherit;font-size:13px;outline:none}
+.tp-inv input:focus,.tp-inv textarea:focus,.tp-inv select:focus{border-color:#7650ce}
+.tp-inv textarea{resize:vertical;line-height:1.6}
+.tp-inv-drawer{width:min(520px,100%)}
+.tp-inv-description{font-size:13px;color:#6d7485;line-height:1.7;white-space:pre-wrap}
+.tp-inv-detail h3{display:flex;align-items:center;gap:8px;margin-top:28px}
+.tp-inv-inline{display:flex;gap:8px;margin-top:12px}
+.tp-inv-inline select{min-width:0;flex:1}
+.tp-inv-linked{display:flex;gap:9px;padding:11px 0;border-bottom:1px solid #edf0f5;font-size:12px;color:#515b6d;overflow-wrap:anywhere}
+.tp-inv-linked svg{flex-shrink:0}
+.tp-inv-muted{font-size:12px;color:#8b93a1}
+.tp-inv-detail form{display:flex;flex-direction:column;gap:10px}
+.tp-inv-detail form button{align-self:flex-start}
+.tp-inv-note{border:1px solid #e8eaf1;background:#fafbfe;border-radius:8px;padding:13px;margin-top:12px}
+.tp-inv-note small{color:#8b93a1;font-size:11px}
+.tp-inv-note p{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.6;color:#333849;margin:8px 0 0}
+@media(max-width:850px){.tp-inv-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:480px){.tp-inv-metrics{grid-template-columns:1fr}.tp-inv-head-actions{width:100%}}
+
+/* TRACEPOINT_INV_GRAPH_PHASE5 — Investigations only */
+.tp-inv-phase5 { font-family: 'Geist', system-ui, sans-serif; display: flex; flex-direction: column; gap: 18px; }
+.tp-inv-phase5-hero { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 27px 30px; background: #24253d; border: 1px solid #343551; border-radius: 12px; color: #fff; }
+.tp-inv-phase5-eyebrow { display: inline-flex; align-items: center; gap: 8px; font-size: 11px; font-weight: 700; letter-spacing: .09em; color: #c6b8ff; }
+.tp-inv-phase5-hero h2 { color: #fff; font-size: 24px; font-weight: 700; letter-spacing: -.55px; margin: 10px 0 7px; }
+.tp-inv-phase5-hero p { color: #c9cada; font-size: 13px; line-height: 1.65; margin: 0; max-width: 670px; }
+.tp-inv-phase5-hero-count { white-space: nowrap; color: #d6ccff; font-size: 12px; font-weight: 700; letter-spacing: .06em; border: 1px solid #59516f; border-radius: 8px; padding: 12px 14px; }
+.tp-inv-phase5 .tp-inv-metrics { gap: 14px; }
+.tp-inv-phase5 .tp-inv-metric { background: #fff; border-radius: 9px; padding: 20px 22px; min-height: 110px; box-shadow: none; }
+.tp-inv-phase5 .tp-inv-metric:nth-child(1) { border-top: 3px solid #7756d3; }
+.tp-inv-phase5 .tp-inv-metric:nth-child(2) { border-top: 3px solid #d8a150; }
+.tp-inv-phase5 .tp-inv-metric:nth-child(3) { border-top: 3px solid #6685ce; }
+.tp-inv-phase5 .tp-inv-metric:nth-child(4) { border-top: 3px solid #4b9d82; }
+.tp-inv-phase5 .tp-inv-metric span { font-size: 13px; font-weight: 600; color: #637086; }
+.tp-inv-phase5 .tp-inv-metric strong { font-size: 29px; font-weight: 700; color: #252e40; }
+.tp-inv-phase5-register { border-radius: 10px; overflow: hidden; }
+.tp-inv-phase5-register .tp-card-head { padding: 22px 24px; gap: 16px; }
+.tp-inv-phase5-register .tp-card-head h2 { font-size: 19px; font-weight: 700; }
+.tp-inv-phase5-register .tp-card-head p { font-size: 13px; }
+.tp-inv-phase5-register .tp-toolbar { padding: 0 24px 20px; }
+.tp-inv-phase5-register .tp-search { min-height: 43px; }
+.tp-inv-phase5-register .tp-search input { font-family: 'Geist', system-ui, sans-serif; font-size: 14px; }
+.tp-inv-phase5-table { min-width: 780px; font-family: 'Geist', system-ui, sans-serif; }
+.tp-inv-phase5-table th { background: #f7f8fb; color: #687386; font-size: 12px; font-weight: 650; padding: 14px 18px; }
+.tp-inv-phase5-table td { padding: 17px 18px; font-size: 14px; color: #354056; border-bottom: 1px solid #edf0f4; }
+.tp-inv-phase5-table tbody tr:hover { background: #f9f7fe; }
+.tp-inv-phase5-table tbody tr:focus-visible { outline: 2px solid #8063d3; outline-offset: -2px; }
+.tp-inv-phase5-table .tp-inv-case { font-family: 'Geist', system-ui, sans-serif; font-weight: 700; }
+.tp-inv-phase5-table .tp-inv-title { font-size: 13px; line-height: 1.5; }
+.tp-inv-phase5-report { display: inline-flex; align-items: center; justify-content: center; gap: 9px; margin: 14px 0; font-size: 13px; font-weight: 600; }
+@media(max-width: 760px) { .tp-inv-phase5-hero { align-items: flex-start; flex-direction: column; padding: 22px; } .tp-inv-phase5-hero-count { white-space: normal; } .tp-inv-phase5-register .tp-card-head { flex-wrap: wrap; } }
